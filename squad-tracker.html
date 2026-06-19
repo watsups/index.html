@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Squad Position Tracker</title>
+<style>
+  :root{
+    --bg:#0b0b0f; --panel:#141421; --line:rgba(255,255,255,.10); --text:#eaeaf2; --muted:#9aa0b4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+  header{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  header .title{font-weight:700}
+  header small{color:var(--muted)}
+
+  .wrap{display:grid;grid-template-rows:auto auto 1fr;min-height:100dvh}
+
+  .squadbar{display:flex;gap:8px;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid var(--line);background:var(--panel)}
+  .squadbtn{
+    display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:2px solid transparent;
+    background:#1d1d2c;color:var(--text);font-size:14px;cursor:pointer;
+  }
+  .squadbtn .dot{width:12px;height:12px;border-radius:50%;flex:none}
+  .squadbtn.active{border-color:#fff}
+  .squadbtn .clearx{opacity:.6;font-size:12px;margin-left:2px}
+  .squadbtn .clearx:hover{opacity:1}
+
+  .stage{position:relative;overflow:auto;display:flex;justify-content:center;padding:10px;background:#06060a}
+  .mapWrap{position:relative;max-width:100%;width:min(1000px,100%)}
+  .mapWrap img{display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none;border-radius:6px}
+
+  .gridLayer{
+    /* aligned to the hand-drawn grid in the source photo (cols A-L, rows 1-13) */
+    position:absolute;
+    top:4.05%; left:0.33%; right:5.66%; bottom:0.31%;
+    display:grid;
+    grid-template-columns:repeat(12,1fr);
+    grid-template-rows:repeat(13,1fr);
+    cursor:crosshair;
+  }
+  .gridLayer.showLines .cell{outline:1px solid rgba(0,255,180,.35)}
+  .cell{position:relative}
+  .cell:hover{background:rgba(0,255,180,.10)}
+
+  .marker{
+    position:absolute;transform:translate(-50%,-50%);
+    display:flex;flex-direction:column;align-items:center;pointer-events:none;
+    filter:drop-shadow(0 2px 4px rgba(0,0,0,.6));
+    transition:left .25s ease, top .25s ease;
+  }
+  .marker .pin{
+    width:26px;height:26px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+    border:2px solid rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;
+  }
+  .marker .pin span{transform:rotate(45deg);font-size:11px;font-weight:800;color:#0b0b0f}
+  .marker .label{
+    margin-top:2px;font-size:10px;font-weight:700;background:rgba(10,10,16,.75);
+    padding:1px 5px;border-radius:6px;white-space:nowrap
+  }
+
+  .readout{
+    position:absolute;top:8px;left:8px;background:rgba(10,10,16,.78);border:1px solid var(--line);
+    padding:6px 10px;border-radius:8px;font-size:12px;pointer-events:none
+  }
+
+  footer{padding:10px 14px;border-top:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;gap:10px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row > *{background:#1d1d2c;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px}
+  input#coord{flex:1;min-width:140px;text-transform:uppercase}
+  button{cursor:pointer}
+  button.primary{background:#2563eb;border-color:#2563eb;font-weight:700}
+  button.ghost{background:transparent}
+  .toggle{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);padding:0}
+  .toggle input{accent-color:#2563eb}
+
+  details{background:#101018;border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  summary{cursor:pointer;font-size:13px;color:var(--muted)}
+  .log{max-height:160px;overflow:auto;font-size:12.5px;margin-top:8px;display:flex;flex-direction:column-reverse;gap:4px}
+  .log .entry{display:flex;gap:8px;color:var(--muted)}
+  .log .entry b{color:var(--text)}
+  .phon{display:grid;grid-template-columns:repeat(4,1fr);gap:4px 10px;font-size:12px;margin-top:8px;color:var(--muted)}
+  @media (min-width:560px){.phon{grid-template-columns:repeat(6,1fr)}}
+  .err{color:#ff6b6b;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="title">Squad Position Tracker</div>
+      <small>Tap a squad, then type their callout (e.g. "A5" or "alpha 5") or tap their spot on the map.</small>
+    </div>
+    <small id="gridhint">12 cols (A–L) × 13 rows (1–13)</small>
+  </header>
+
+  <div class="squadbar" id="squadbar"></div>
+
+  <div class="stage">
+    <div class="mapWrap" id="mapWrap">
+      <img id="mapImg" src="assets/airsoft-map.jpg" alt="Airsoft tactical map" />
+      <div class="gridLayer" id="gridLayer"></div>
+      <div class="readout" id="readout" style="display:none"></div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="row">
+      <input id="coord" type="text" placeholder="Grid e.g. A5, alpha 5, F-12" autocomplete="off" />
+      <button class="primary" id="placeBtn">Place</button>
+      <button class="ghost" id="clearOne">Clear selected</button>
+      <label class="toggle"><input type="checkbox" id="showGrid"> show grid</label>
+      <button class="ghost" id="addSquad">+ Squad</button>
+      <button class="ghost" id="clearAll">Clear all</button>
+    </div>
+    <div id="errBox" class="err"></div>
+
+    <details>
+      <summary>Rename squads</summary>
+      <div class="row" id="renamePanel" style="margin-top:8px"></div>
+    </details>
+
+    <details>
+      <summary>Callout log</summary>
+      <div class="log" id="log"></div>
+    </details>
+
+    <details>
+      <summary>Phonetic alphabet reference (for column letters)</summary>
+      <div class="phon" id="phon"></div>
+    </details>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const COLS = 12, ROWS = 13; // A-L, 1-13
+  const COL_LETTERS = ['A','B','C','D','E','F','G','H','I','J','K','L'];
+  const PHONETIC = {
+    ALPHA:'A', BRAVO:'B', CHARLIE:'C', DELTA:'D', ECHO:'E', FOXTROT:'F',
+    GOLF:'G', HOTEL:'H', INDIA:'I', JULIETT:'J', JULIET:'J', KILO:'K', LIMA:'L'
+  };
+  const DEFAULT_COLORS = ['#ff4d4d','#3b82f6','#22c55e','#eab308','#a855f7','#f97316','#14b8a6','#ec4899'];
+  const STORAGE_KEY = 'squadTrackerState_v1';
+
+  const squadbar = document.getElementById('squadbar');
+  const gridLayer = document.getElementById('gridLayer');
+  const mapImg = document.getElementById('mapImg');
+  const coordInput = document.getElementById('coord');
+  const placeBtn = document.getElementById('placeBtn');
+  const clearOneBtn = document.getElementById('clearOne');
+  const clearAllBtn = document.getElementById('clearAll');
+  const addSquadBtn = document.getElementById('addSquad');
+  const showGridChk = document.getElementById('showGrid');
+  const errBox = document.getElementById('errBox');
+  const logEl = document.getElementById('log');
+  const readout = document.getElementById('readout');
+  const phonEl = document.getElementById('phon');
+  const renamePanel = document.getElementById('renamePanel');
+
+  // ---- state ----
+  let state = loadState() || {
+    squads: [
+      { id: 1, name: 'Squad 1', color: DEFAULT_COLORS[0], col: null, row: null },
+      { id: 2, name: 'Squad 2', color: DEFAULT_COLORS[1], col: null, row: null },
+      { id: 3, name: 'Squad 3', color: DEFAULT_COLORS[2], col: null, row: null },
+      { id: 4, name: 'Squad 4', color: DEFAULT_COLORS[3], col: null, row: null },
+    ],
+    history: [],
+    selected: 1,
+  };
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  function saveState() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function nextSquadId() {
+    return state.squads.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+  }
+
+  // ---- parsing "A5" / "alpha 5" / "F-12" / "5 A" etc ----
+  function parseCoord(raw) {
+    if (!raw) return null;
+    let s = raw.trim().toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+    if (!s) return null;
+    const tokens = s.split(/\s+/);
+
+    let colLetter = null, rowNum = null;
+    for (const t of tokens) {
+      if (PHONETIC[t]) { colLetter = PHONETIC[t]; continue; }
+      if (/^[A-L]$/.test(t)) { colLetter = t; continue; }
+      if (/^\d{1,2}$/.test(t)) { rowNum = parseInt(t, 10); continue; }
+      // token like "A5" stuck together
+      const m = t.match(/^([A-L])(\d{1,2})$/) || t.match(/^(\d{1,2})([A-L])$/);
+      if (m) {
+        if (/^[A-L]$/.test(m[1])) { colLetter = m[1]; rowNum = parseInt(m[2], 10); }
+        else { rowNum = parseInt(m[1], 10); colLetter = m[2]; }
+      }
+    }
+    if (!colLetter || rowNum === null) return null;
+    if (rowNum < 1 || rowNum > ROWS) return null;
+    const colIdx = COL_LETTERS.indexOf(colLetter);
+    if (colIdx === -1) return null;
+    return { col: colIdx, row: rowNum - 1, label: `${colLetter}${rowNum}` };
+  }
+
+  // ---- build grid cells (for tap-to-place) ----
+  function buildGrid() {
+    gridLayer.innerHTML = '';
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.dataset.col = c;
+        cell.dataset.row = r;
+        gridLayer.appendChild(cell);
+      }
+    }
+  }
+
+  gridLayer.addEventListener('click', (e) => {
+    const cell = e.target.closest('.cell');
+    if (!cell) return;
+    const col = parseInt(cell.dataset.col, 10);
+    const row = parseInt(cell.dataset.row, 10);
+    placeSquad(state.selected, col, row);
+  });
+
+  gridLayer.addEventListener('pointermove', (e) => {
+    const cell = e.target.closest('.cell');
+    if (!cell) { readout.style.display = 'none'; return; }
+    const col = parseInt(cell.dataset.col, 10);
+    const row = parseInt(cell.dataset.row, 10);
+    readout.textContent = `${COL_LETTERS[col]}${row + 1}`;
+    readout.style.display = 'block';
+  });
+  gridLayer.addEventListener('pointerleave', () => readout.style.display = 'none');
+
+  // ---- squad bar UI ----
+  function renderSquadBar() {
+    squadbar.innerHTML = '';
+    state.squads.forEach(sq => {
+      const btn = document.createElement('div');
+      btn.className = 'squadbtn' + (sq.id === state.selected ? ' active' : '');
+      btn.style.borderColor = sq.id === state.selected ? '#fff' : 'transparent';
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = sq.color;
+      btn.appendChild(dot);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = sq.name;
+      btn.appendChild(nameSpan);
+
+      if (sq.col !== null) {
+        const posTag = document.createElement('span');
+        posTag.style.opacity = '.75';
+        posTag.style.fontSize = '12px';
+        posTag.textContent = `${COL_LETTERS[sq.col]}${sq.row + 1}`;
+        btn.appendChild(posTag);
+      }
+
+      const xBtn = document.createElement('span');
+      xBtn.className = 'clearx';
+      xBtn.textContent = '✕';
+      xBtn.title = 'Remove squad';
+      xBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (state.squads.length <= 1) return;
+        state.squads = state.squads.filter(s => s.id !== sq.id);
+        if (state.selected === sq.id) state.selected = state.squads[0].id;
+        saveState();
+        render();
+      });
+      btn.appendChild(xBtn);
+
+      btn.addEventListener('click', () => {
+        state.selected = sq.id;
+        saveState();
+        render();
+      });
+
+      squadbar.appendChild(btn);
+    });
+  }
+
+  // ---- markers ----
+  function renderMarkers() {
+    gridLayer.querySelectorAll('.marker').forEach(m => m.remove());
+
+    // group squads by cell for offset stacking
+    const byCell = new Map();
+    state.squads.forEach(sq => {
+      if (sq.col === null) return;
+      const key = `${sq.col},${sq.row}`;
+      if (!byCell.has(key)) byCell.set(key, []);
+      byCell.get(key).push(sq);
+    });
+
+    byCell.forEach(list => {
+      list.forEach((sq, i) => {
+        const baseLeft = (sq.col + 0.5) / COLS * 100;
+        const baseTop = (sq.row + 0.5) / ROWS * 100;
+        const n = list.length;
+        const offsetPx = n > 1 ? 9 : 0;
+        const angle = (2 * Math.PI * i) / Math.max(n, 1);
+        const dx = n > 1 ? Math.cos(angle) * offsetPx : 0;
+        const dy = n > 1 ? Math.sin(angle) * offsetPx : 0;
+
+        const marker = document.createElement('div');
+        marker.className = 'marker';
+        marker.style.left = `calc(${baseLeft}% + ${dx}px)`;
+        marker.style.top = `calc(${baseTop}% + ${dy}px)`;
+
+        const pin = document.createElement('div');
+        pin.className = 'pin';
+        pin.style.background = sq.color;
+        const span = document.createElement('span');
+        span.textContent = sq.id;
+        pin.appendChild(span);
+        marker.appendChild(pin);
+
+        const label = document.createElement('div');
+        label.className = 'label';
+        label.textContent = sq.name;
+        marker.appendChild(label);
+
+        gridLayer.appendChild(marker);
+      });
+    });
+  }
+
+  function render() {
+    renderSquadBar();
+    renderMarkers();
+    renderRenamePanel();
+    gridLayer.classList.toggle('showLines', showGridChk.checked);
+  }
+
+  function renderRenamePanel() {
+    renamePanel.innerHTML = '';
+    state.squads.forEach(sq => {
+      const wrap = document.createElement('label');
+      wrap.style.display = 'flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '6px';
+      wrap.style.background = 'transparent';
+      wrap.style.border = 'none';
+      wrap.style.padding = '0';
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.display = 'inline-block';
+      dot.style.width = '10px';
+      dot.style.height = '10px';
+      dot.style.borderRadius = '50%';
+      dot.style.background = sq.color;
+      wrap.appendChild(dot);
+
+      const input = document.createElement('input');
+      input.value = sq.name;
+      input.style.width = '12ch';
+      input.addEventListener('change', () => {
+        sq.name = input.value.trim() || sq.name;
+        saveState();
+        render();
+      });
+      wrap.appendChild(input);
+
+      renamePanel.appendChild(wrap);
+    });
+  }
+
+  // ---- actions ----
+  function placeSquad(squadId, col, row) {
+    const sq = state.squads.find(s => s.id === squadId);
+    if (!sq) return;
+    sq.col = col; sq.row = row;
+    state.history.push({
+      t: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      name: sq.name,
+      coord: `${COL_LETTERS[col]}${row + 1}`,
+    });
+    saveState();
+    render();
+    renderLog();
+  }
+
+  function renderLog() {
+    logEl.innerHTML = '';
+    state.history.slice(-100).forEach(h => {
+      const div = document.createElement('div');
+      div.className = 'entry';
+      div.innerHTML = `<span>${h.t}</span><b>${escapeHtml(h.name)}</b><span>→ ${h.coord}</span>`;
+      logEl.appendChild(div);
+    });
+  }
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  placeBtn.addEventListener('click', submitCoord);
+  coordInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitCoord(); });
+
+  function submitCoord() {
+    errBox.textContent = '';
+    const parsed = parseCoord(coordInput.value);
+    if (!parsed) {
+      errBox.textContent = `Couldn't read "${coordInput.value}". Try a column A–L and row 1–13, e.g. "A5" or "alpha 5".`;
+      return;
+    }
+    placeSquad(state.selected, parsed.col, parsed.row);
+    coordInput.value = '';
+    coordInput.focus();
+  }
+
+  clearOneBtn.addEventListener('click', () => {
+    const sq = state.squads.find(s => s.id === state.selected);
+    if (!sq) return;
+    sq.col = null; sq.row = null;
+    saveState();
+    render();
+  });
+
+  clearAllBtn.addEventListener('click', () => {
+    if (!confirm('Clear all squad positions and the log?')) return;
+    state.squads.forEach(s => { s.col = null; s.row = null; });
+    state.history = [];
+    saveState();
+    render();
+    renderLog();
+  });
+
+  addSquadBtn.addEventListener('click', () => {
+    const id = nextSquadId();
+    const color = DEFAULT_COLORS[(id - 1) % DEFAULT_COLORS.length];
+    state.squads.push({ id, name: `Squad ${id}`, color, col: null, row: null });
+    state.selected = id;
+    saveState();
+    render();
+  });
+
+  showGridChk.addEventListener('change', () => {
+    gridLayer.classList.toggle('showLines', showGridChk.checked);
+  });
+
+  // ---- phonetic reference table ----
+  function renderPhon() {
+    phonEl.innerHTML = '';
+    COL_LETTERS.forEach(letter => {
+      const word = Object.keys(PHONETIC).find(k => PHONETIC[k] === letter && k !== 'JULIET');
+      const div = document.createElement('div');
+      div.textContent = `${letter} — ${word ? word[0] + word.slice(1).toLowerCase() : ''}`;
+      phonEl.appendChild(div);
+    });
+  }
+
+  // ---- init ----
+  buildGrid();
+  renderPhon();
+  renderLog();
+  render();
+})();
+</script>
+</body>
+</html>
