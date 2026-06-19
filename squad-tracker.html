@@ -14,7 +14,15 @@
   header .title{font-weight:700}
   header small{color:var(--muted)}
 
-  .wrap{display:grid;grid-template-rows:auto auto auto 1fr;min-height:100dvh}
+  .wrap{display:grid;grid-template-rows:auto auto auto auto 1fr;min-height:100dvh}
+
+  .syncbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--line);background:#0e0e16;font-size:12.5px}
+  .syncbar .badge{padding:3px 9px;border-radius:999px;font-weight:700;font-size:11.5px}
+  .syncbar .badge.synced{background:rgba(34,197,94,.18);color:#4ade80}
+  .syncbar .badge.offline{background:rgba(239,68,68,.18);color:#f87171}
+  .syncbar .badge.local{background:rgba(255,255,255,.10);color:var(--muted)}
+  .syncbar code{background:#1d1d2c;border-radius:6px;padding:2px 6px;font-size:12px}
+  .syncbar button{background:#1d1d2c;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer}
 
   .modebar{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--line);background:#101018}
   .modebtn{
@@ -113,6 +121,12 @@
     <small id="gridhint">12 cols (A–L) × 13 rows (1–13)</small>
   </header>
 
+  <div class="syncbar" id="syncbar">
+    <span class="badge local" id="connBadge">📱 Local only (this device)</span>
+    <span id="roomInfo" style="display:none">Room: <code id="roomCode"></code></span>
+    <button id="copyLinkBtn" style="display:none">Copy shareable link</button>
+  </div>
+
   <div class="modebar" id="modebar">
     <button class="modebtn active" data-mode="squad">👥 Squads</button>
     <button class="modebtn" data-mode="enemy">💀 Enemy</button>
@@ -168,6 +182,15 @@
   </footer>
 </div>
 
+<!--
+  OPTIONAL: live sync across phones.
+  Fill in firebaseConfig below with your own free Firebase Realtime Database
+  project (see setup steps in the project README / chat instructions). Until
+  you do, the app keeps working exactly as before, saved only on this device.
+-->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
 <script>
 (() => {
   const COLS = 12, ROWS = 13; // A-L, 1-13
@@ -178,6 +201,75 @@
   };
   const DEFAULT_COLORS = ['#ff4d4d','#3b82f6','#22c55e','#eab308','#a855f7','#f97316','#14b8a6','#ec4899'];
   const STORAGE_KEY = 'squadTrackerState_v2';
+
+  // ---- live sync (optional) ----
+  // Replace these with your own Firebase project's web config to turn on
+  // real-time syncing across everyone who opens the same shareable link.
+  // Get this from: Firebase console -> Project settings -> General -> Your apps -> Web app.
+  const firebaseConfig = {
+    apiKey: "REPLACE_ME",
+    authDomain: "REPLACE_ME.firebaseapp.com",
+    databaseURL: "https://REPLACE_ME-default-rtdb.firebaseio.com",
+    projectId: "REPLACE_ME",
+    storageBucket: "REPLACE_ME.appspot.com",
+    messagingSenderId: "REPLACE_ME",
+    appId: "REPLACE_ME",
+  };
+  const SYNC_ENABLED = firebaseConfig.apiKey && firebaseConfig.apiKey !== 'REPLACE_ME';
+
+  function getRoomFromUrl() {
+    const m = location.hash.match(/room=([a-zA-Z0-9_-]+)/);
+    return m ? m[1] : null;
+  }
+  function randomRoom() {
+    const words = ['falcon','tango','viper','ember','rogue','shadow','ranger','ghost','cobra','raptor'];
+    return words[Math.floor(Math.random() * words.length)] + '-' + Math.floor(100 + Math.random() * 900);
+  }
+  let room = getRoomFromUrl();
+  if (SYNC_ENABLED && !room) {
+    room = randomRoom();
+    location.hash = 'room=' + room;
+  }
+
+  let fbRef = null;
+  const connBadge = document.getElementById('connBadge');
+  const roomInfo = document.getElementById('roomInfo');
+  const roomCodeEl = document.getElementById('roomCode');
+  const copyLinkBtn = document.getElementById('copyLinkBtn');
+
+  function setBadge(kind, text) {
+    connBadge.className = 'badge ' + kind;
+    connBadge.textContent = text;
+  }
+
+  if (SYNC_ENABLED) {
+    // Squad placement, the grid, etc. must keep working even if this fails
+    // (e.g. Firebase SDK couldn't load over a weak field connection).
+    try {
+      if (typeof firebase === 'undefined') throw new Error('Firebase SDK did not load');
+      firebase.initializeApp(firebaseConfig);
+      fbRef = firebase.database().ref('rooms/' + room);
+      roomInfo.style.display = '';
+      roomCodeEl.textContent = room;
+      copyLinkBtn.style.display = '';
+      setBadge('offline', '🟡 Connecting…');
+
+      copyLinkBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(location.href).then(() => {
+          copyLinkBtn.textContent = 'Copied!';
+          setTimeout(() => copyLinkBtn.textContent = 'Copy shareable link', 1500);
+        });
+      });
+
+      firebase.database().ref('.info/connected').on('value', snap => {
+        setBadge(snap.val() ? 'synced' : 'offline', snap.val() ? '🟢 Synced live' : '🔴 Offline (showing last seen)');
+      });
+    } catch (err) {
+      console.error('Sync setup failed, falling back to local-only:', err);
+      fbRef = null;
+      setBadge('local', '📱 Local only (sync unavailable)');
+    }
+  }
 
   const modebar = document.getElementById('modebar');
   const squadbar = document.getElementById('squadbar');
@@ -224,6 +316,35 @@
   }
   function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (fbRef) fbRef.set(state);
+  }
+
+  if (fbRef) {
+    try {
+      fbRef.on('value', snap => {
+        const remote = snap.val();
+        if (remote) {
+          state = remote;
+          state.enemies = state.enemies || [];
+          state.pois = state.pois || [];
+          state.mode = state.mode || 'squad';
+          state.selected = state.selected || (state.squads[0] && state.squads[0].id) || 1;
+        } else {
+          // brand new room: seed it with our current (local) state
+          fbRef.set(state);
+        }
+        render();
+        renderLog();
+      }, err => {
+        console.error('Sync listener error, falling back to local-only:', err);
+        fbRef = null;
+        setBadge('local', '📱 Local only (sync unavailable)');
+      });
+    } catch (err) {
+      console.error('Sync listener setup failed, falling back to local-only:', err);
+      fbRef = null;
+      setBadge('local', '📱 Local only (sync unavailable)');
+    }
   }
 
   function nextSquadId() {
