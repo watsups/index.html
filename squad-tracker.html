@@ -14,7 +14,14 @@
   header .title{font-weight:700}
   header small{color:var(--muted)}
 
-  .wrap{display:grid;grid-template-rows:auto auto 1fr;min-height:100dvh}
+  .wrap{display:grid;grid-template-rows:auto auto auto 1fr;min-height:100dvh}
+
+  .modebar{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--line);background:#101018}
+  .modebtn{
+    background:#1d1d2c;border:2px solid transparent;color:var(--text);border-radius:999px;
+    padding:8px 14px;font-size:14px;cursor:pointer;font-weight:600
+  }
+  .modebtn.active{border-color:#fff}
 
   .squadbar{display:flex;gap:8px;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid var(--line);background:var(--panel)}
   .squadbtn{
@@ -48,15 +55,21 @@
     display:flex;flex-direction:column;align-items:center;pointer-events:none;
     filter:drop-shadow(0 2px 4px rgba(0,0,0,.6));
     transition:left .25s ease, top .25s ease;
+    z-index:1;
   }
+  .marker.enemy, .marker.poi{ z-index:2; }
   .marker .pin{
     width:26px;height:26px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
     border:2px solid rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;
   }
   .marker .pin span{transform:rotate(45deg);font-size:11px;font-weight:800;color:#0b0b0f}
+  .marker .pin.round{
+    border-radius:50%;transform:none;width:28px;height:28px;border:2px solid rgba(255,255,255,.5);
+  }
+  .marker .pin.round span{transform:none;font-size:14px}
   .marker .label{
     margin-top:2px;font-size:10px;font-weight:700;background:rgba(10,10,16,.75);
-    padding:1px 5px;border-radius:6px;white-space:nowrap
+    padding:1px 5px;border-radius:6px;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis
   }
 
   .readout{
@@ -67,7 +80,8 @@
   footer{padding:10px 14px;border-top:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;gap:10px}
   .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   .row > *{background:#1d1d2c;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:10px 12px;font-size:14px}
-  input#coord{flex:1;min-width:140px;text-transform:uppercase}
+  input#coord{flex:1;min-width:120px;text-transform:uppercase}
+  input#noteInput{flex:1.4;min-width:140px}
   button{cursor:pointer}
   button.primary{background:#2563eb;border-color:#2563eb;font-weight:700}
   button.ghost{background:transparent}
@@ -79,6 +93,11 @@
   .log{max-height:160px;overflow:auto;font-size:12.5px;margin-top:8px;display:flex;flex-direction:column-reverse;gap:4px}
   .log .entry{display:flex;gap:8px;color:var(--muted)}
   .log .entry b{color:var(--text)}
+  .listpanel{max-height:160px;overflow:auto;font-size:12.5px;margin-top:8px;display:flex;flex-direction:column;gap:4px}
+  .listpanel .entry{display:flex;justify-content:space-between;gap:8px;align-items:center;color:var(--muted)}
+  .listpanel .entry b{color:var(--text)}
+  .listpanel .rm{cursor:pointer;opacity:.7;padding:0 4px}
+  .listpanel .rm:hover{opacity:1}
   .phon{display:grid;grid-template-columns:repeat(4,1fr);gap:4px 10px;font-size:12px;margin-top:8px;color:var(--muted)}
   @media (min-width:560px){.phon{grid-template-columns:repeat(6,1fr)}}
   .err{color:#ff6b6b;font-size:12px}
@@ -89,10 +108,16 @@
   <header>
     <div>
       <div class="title">Squad Position Tracker</div>
-      <small>Tap a squad, then type their callout (e.g. "A5" or "alpha 5") or tap their spot on the map.</small>
+      <small id="helpText">Tap a squad, then type their callout (e.g. "A5" or "alpha 5") or tap their spot on the map.</small>
     </div>
     <small id="gridhint">12 cols (A–L) × 13 rows (1–13)</small>
   </header>
+
+  <div class="modebar" id="modebar">
+    <button class="modebtn active" data-mode="squad">👥 Squads</button>
+    <button class="modebtn" data-mode="enemy">💀 Enemy</button>
+    <button class="modebtn" data-mode="poi">🚩 POI</button>
+  </div>
 
   <div class="squadbar" id="squadbar"></div>
 
@@ -107,6 +132,7 @@
   <footer>
     <div class="row">
       <input id="coord" type="text" placeholder="Grid e.g. A5, alpha 5, F-12" autocomplete="off" />
+      <input id="noteInput" type="text" placeholder="Note e.g. 2x tangos, flank quiet" autocomplete="off" style="display:none" />
       <button class="primary" id="placeBtn">Place</button>
       <button class="ghost" id="clearOne">Clear selected</button>
       <label class="toggle"><input type="checkbox" id="showGrid"> show grid</label>
@@ -118,6 +144,16 @@
     <details>
       <summary>Rename squads</summary>
       <div class="row" id="renamePanel" style="margin-top:8px"></div>
+    </details>
+
+    <details id="enemyDetails">
+      <summary>Enemy contacts</summary>
+      <div class="listpanel" id="enemyList"></div>
+    </details>
+
+    <details id="poiDetails">
+      <summary>Points of interest</summary>
+      <div class="listpanel" id="poiList"></div>
     </details>
 
     <details>
@@ -141,12 +177,13 @@
     GOLF:'G', HOTEL:'H', INDIA:'I', JULIETT:'J', JULIET:'J', KILO:'K', LIMA:'L'
   };
   const DEFAULT_COLORS = ['#ff4d4d','#3b82f6','#22c55e','#eab308','#a855f7','#f97316','#14b8a6','#ec4899'];
-  const STORAGE_KEY = 'squadTrackerState_v1';
+  const STORAGE_KEY = 'squadTrackerState_v2';
 
+  const modebar = document.getElementById('modebar');
   const squadbar = document.getElementById('squadbar');
   const gridLayer = document.getElementById('gridLayer');
-  const mapImg = document.getElementById('mapImg');
   const coordInput = document.getElementById('coord');
+  const noteInput = document.getElementById('noteInput');
   const placeBtn = document.getElementById('placeBtn');
   const clearOneBtn = document.getElementById('clearOne');
   const clearAllBtn = document.getElementById('clearAll');
@@ -157,6 +194,9 @@
   const readout = document.getElementById('readout');
   const phonEl = document.getElementById('phon');
   const renamePanel = document.getElementById('renamePanel');
+  const enemyListEl = document.getElementById('enemyList');
+  const poiListEl = document.getElementById('poiList');
+  const helpText = document.getElementById('helpText');
 
   // ---- state ----
   let state = loadState() || {
@@ -166,9 +206,15 @@
       { id: 3, name: 'Squad 3', color: DEFAULT_COLORS[2], col: null, row: null },
       { id: 4, name: 'Squad 4', color: DEFAULT_COLORS[3], col: null, row: null },
     ],
+    enemies: [],
+    pois: [],
     history: [],
     selected: 1,
+    mode: 'squad',
   };
+  state.enemies = state.enemies || [];
+  state.pois = state.pois || [];
+  state.mode = state.mode || 'squad';
 
   function loadState() {
     try {
@@ -182,6 +228,9 @@
 
   function nextSquadId() {
     return state.squads.reduce((m, s) => Math.max(m, s.id), 0) + 1;
+  }
+  function nextMarkerId(list) {
+    return list.reduce((m, x) => Math.max(m, x.id), 0) + 1;
   }
 
   // ---- parsing "A5" / "alpha 5" / "F-12" / "5 A" etc ----
@@ -229,7 +278,12 @@
     if (!cell) return;
     const col = parseInt(cell.dataset.col, 10);
     const row = parseInt(cell.dataset.row, 10);
-    placeSquad(state.selected, col, row);
+    if (state.mode === 'squad') {
+      placeSquad(state.selected, col, row);
+    } else {
+      addMarker(state.mode, col, row, noteInput.value.trim());
+      noteInput.value = '';
+    }
   });
 
   gridLayer.addEventListener('pointermove', (e) => {
@@ -241,6 +295,39 @@
     readout.style.display = 'block';
   });
   gridLayer.addEventListener('pointerleave', () => readout.style.display = 'none');
+
+  // ---- mode bar ----
+  modebar.querySelectorAll('.modebtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.mode = btn.dataset.mode;
+      saveState();
+      updateModeUI();
+    });
+  });
+
+  function updateModeUI() {
+    modebar.querySelectorAll('.modebtn').forEach(b => {
+      b.classList.toggle('active', b.dataset.mode === state.mode);
+    });
+    squadbar.style.display = state.mode === 'squad' ? 'flex' : 'none';
+    addSquadBtn.style.display = state.mode === 'squad' ? '' : 'none';
+    noteInput.style.display = state.mode === 'squad' ? 'none' : '';
+
+    if (state.mode === 'squad') {
+      placeBtn.textContent = 'Place';
+      clearOneBtn.textContent = 'Clear selected';
+      helpText.textContent = 'Tap a squad, then type their callout (e.g. "A5" or "alpha 5") or tap their spot on the map.';
+    } else if (state.mode === 'enemy') {
+      placeBtn.textContent = 'Mark enemy';
+      clearOneBtn.textContent = 'Clear all enemy';
+      helpText.textContent = 'Type the grid + an optional note (e.g. "2x tangos") or tap the map to drop an enemy contact.';
+    } else {
+      placeBtn.textContent = 'Add POI';
+      clearOneBtn.textContent = 'Clear all POI';
+      helpText.textContent = 'Type the grid + a note (e.g. "flank quietly") or tap the map to mark a point of interest.';
+    }
+    errBox.textContent = '';
+  }
 
   // ---- squad bar UI ----
   function renderSquadBar() {
@@ -291,47 +378,61 @@
     });
   }
 
-  // ---- markers ----
+  // ---- markers on the map ----
   function renderMarkers() {
     gridLayer.querySelectorAll('.marker').forEach(m => m.remove());
 
-    // group squads by cell for offset stacking
     const byCell = new Map();
-    state.squads.forEach(sq => {
-      if (sq.col === null) return;
-      const key = `${sq.col},${sq.row}`;
+    function addToCell(type, data) {
+      const key = `${data.col},${data.row}`;
       if (!byCell.has(key)) byCell.set(key, []);
-      byCell.get(key).push(sq);
-    });
+      byCell.get(key).push({ type, data });
+    }
+    state.squads.forEach(sq => { if (sq.col !== null) addToCell('squad', sq); });
+    state.enemies.forEach(en => addToCell('enemy', en));
+    state.pois.forEach(p => addToCell('poi', p));
 
     byCell.forEach(list => {
-      list.forEach((sq, i) => {
-        const baseLeft = (sq.col + 0.5) / COLS * 100;
-        const baseTop = (sq.row + 0.5) / ROWS * 100;
+      list.forEach((entry, i) => {
+        const { col, row } = entry.data;
+        const baseLeft = (col + 0.5) / COLS * 100;
+        const baseTop = (row + 0.5) / ROWS * 100;
         const n = list.length;
-        const offsetPx = n > 1 ? 9 : 0;
+        const offsetPx = n > 1 ? 10 : 0;
         const angle = (2 * Math.PI * i) / Math.max(n, 1);
         const dx = n > 1 ? Math.cos(angle) * offsetPx : 0;
         const dy = n > 1 ? Math.sin(angle) * offsetPx : 0;
 
         const marker = document.createElement('div');
-        marker.className = 'marker';
+        marker.className = 'marker' + (entry.type !== 'squad' ? ` ${entry.type}` : '');
         marker.style.left = `calc(${baseLeft}% + ${dx}px)`;
         marker.style.top = `calc(${baseTop}% + ${dy}px)`;
 
         const pin = document.createElement('div');
-        pin.className = 'pin';
-        pin.style.background = sq.color;
         const span = document.createElement('span');
-        span.textContent = sq.id;
-        pin.appendChild(span);
-        marker.appendChild(pin);
-
         const label = document.createElement('div');
         label.className = 'label';
-        label.textContent = sq.name;
-        marker.appendChild(label);
 
+        if (entry.type === 'squad') {
+          pin.className = 'pin';
+          pin.style.background = entry.data.color;
+          span.textContent = entry.data.id;
+          label.textContent = entry.data.name;
+        } else if (entry.type === 'enemy') {
+          pin.className = 'pin round';
+          pin.style.background = '#dc2626';
+          span.textContent = '💀';
+          label.textContent = entry.data.note || 'Enemy';
+        } else {
+          pin.className = 'pin round';
+          pin.style.background = '#a855f7';
+          span.textContent = '🚩';
+          label.textContent = entry.data.note || 'POI';
+        }
+
+        pin.appendChild(span);
+        marker.appendChild(pin);
+        marker.appendChild(label);
         gridLayer.appendChild(marker);
       });
     });
@@ -341,6 +442,9 @@
     renderSquadBar();
     renderMarkers();
     renderRenamePanel();
+    renderMarkerList(enemyListEl, state.enemies, 'enemy');
+    renderMarkerList(poiListEl, state.pois, 'poi');
+    updateModeUI();
     gridLayer.classList.toggle('showLines', showGridChk.checked);
   }
 
@@ -378,27 +482,83 @@
     });
   }
 
+  function formatAge(epoch) {
+    const diffMin = Math.floor((Date.now() - epoch) / 60000);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const h = Math.floor(diffMin / 60);
+    return `${h}h ${diffMin % 60}m ago`;
+  }
+
+  function renderMarkerList(container, list, kind) {
+    container.innerHTML = '';
+    if (!list.length) {
+      const div = document.createElement('div');
+      div.style.color = 'var(--muted)';
+      div.textContent = kind === 'enemy' ? 'No enemy contacts reported.' : 'No points of interest yet.';
+      container.appendChild(div);
+      return;
+    }
+    list.slice().reverse().forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'entry';
+
+      const left = document.createElement('span');
+      left.innerHTML = `<b>${COL_LETTERS[item.col]}${item.row + 1}</b>${item.note ? ' — ' + escapeHtml(item.note) : ''} <span style="opacity:.6">(${formatAge(item.epoch)})</span>`;
+      row.appendChild(left);
+
+      const rm = document.createElement('span');
+      rm.className = 'rm';
+      rm.textContent = '✕';
+      rm.title = 'Remove';
+      rm.addEventListener('click', () => {
+        const arr = kind === 'enemy' ? state.enemies : state.pois;
+        const idx = arr.findIndex(a => a.id === item.id);
+        if (idx !== -1) arr.splice(idx, 1);
+        saveState();
+        render();
+      });
+      row.appendChild(rm);
+
+      container.appendChild(row);
+    });
+  }
+
   // ---- actions ----
   function placeSquad(squadId, col, row) {
     const sq = state.squads.find(s => s.id === squadId);
     if (!sq) return;
     sq.col = col; sq.row = row;
-    state.history.push({
-      t: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      name: sq.name,
-      coord: `${COL_LETTERS[col]}${row + 1}`,
-    });
+    pushHistory('squad', sq.name, `${COL_LETTERS[col]}${row + 1}`, '');
     saveState();
     render();
-    renderLog();
   }
 
+  function addMarker(kind, col, row, note) {
+    const list = kind === 'enemy' ? state.enemies : state.pois;
+    const id = nextMarkerId(list);
+    list.push({ id, col, row, note: note || '', epoch: Date.now() });
+    pushHistory(kind, kind === 'enemy' ? 'Enemy' : 'POI', `${COL_LETTERS[col]}${row + 1}`, note || '');
+    saveState();
+    render();
+  }
+
+  function pushHistory(kind, name, coord, note) {
+    state.history.push({
+      t: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      kind, name, coord, note,
+    });
+  }
+
+  const KIND_ICON = { squad: '👥', enemy: '💀', poi: '🚩' };
   function renderLog() {
     logEl.innerHTML = '';
-    state.history.slice(-100).forEach(h => {
+    state.history.slice(-150).forEach(h => {
       const div = document.createElement('div');
       div.className = 'entry';
-      div.innerHTML = `<span>${h.t}</span><b>${escapeHtml(h.name)}</b><span>→ ${h.coord}</span>`;
+      const icon = KIND_ICON[h.kind] || '';
+      const noteTxt = h.note ? ` — ${escapeHtml(h.note)}` : '';
+      div.innerHTML = `<span>${h.t}</span><span>${icon}</span><b>${escapeHtml(h.name)}</b><span>→ ${h.coord}${noteTxt}</span>`;
       logEl.appendChild(div);
     });
   }
@@ -408,6 +568,7 @@
 
   placeBtn.addEventListener('click', submitCoord);
   coordInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitCoord(); });
+  noteInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitCoord(); });
 
   function submitCoord() {
     errBox.textContent = '';
@@ -416,22 +577,39 @@
       errBox.textContent = `Couldn't read "${coordInput.value}". Try a column A–L and row 1–13, e.g. "A5" or "alpha 5".`;
       return;
     }
-    placeSquad(state.selected, parsed.col, parsed.row);
+    if (state.mode === 'squad') {
+      placeSquad(state.selected, parsed.col, parsed.row);
+    } else {
+      addMarker(state.mode, parsed.col, parsed.row, noteInput.value.trim());
+    }
     coordInput.value = '';
+    noteInput.value = '';
+    renderLog();
     coordInput.focus();
   }
 
   clearOneBtn.addEventListener('click', () => {
-    const sq = state.squads.find(s => s.id === state.selected);
-    if (!sq) return;
-    sq.col = null; sq.row = null;
+    if (state.mode === 'squad') {
+      const sq = state.squads.find(s => s.id === state.selected);
+      if (sq) { sq.col = null; sq.row = null; }
+    } else if (state.mode === 'enemy') {
+      if (!state.enemies.length) return;
+      if (!confirm('Clear all enemy contacts?')) return;
+      state.enemies = [];
+    } else {
+      if (!state.pois.length) return;
+      if (!confirm('Clear all points of interest?')) return;
+      state.pois = [];
+    }
     saveState();
     render();
   });
 
   clearAllBtn.addEventListener('click', () => {
-    if (!confirm('Clear all squad positions and the log?')) return;
+    if (!confirm('Clear all squad positions, enemy contacts, POIs and the log?')) return;
     state.squads.forEach(s => { s.col = null; s.row = null; });
+    state.enemies = [];
+    state.pois = [];
     state.history = [];
     saveState();
     render();
@@ -461,6 +639,12 @@
       phonEl.appendChild(div);
     });
   }
+
+  // keep "time ago" labels fresh without a full re-render
+  setInterval(() => {
+    renderMarkerList(enemyListEl, state.enemies, 'enemy');
+    renderMarkerList(poiListEl, state.pois, 'poi');
+  }, 30000);
 
   // ---- init ----
   buildGrid();
