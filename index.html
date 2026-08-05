@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anti-SAM Air Operations</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; display:flex; align-items:center; justify-content:center;
+       min-height:100vh; font-family:'Courier New',monospace; overflow:hidden; }
+canvas { display:block; cursor:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ═══════════════════════════════════════════════
+//  ANTI-SAM AIR OPERATIONS — PLANE SIMULATOR
+// ═══════════════════════════════════════════════
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+const W = c.width = 920, H = c.height = 620;
+const GY = 565; // ground y
+
+let state = 'menu'; // menu | playing | dead | waveclear
+let wave = 1, score = 0, highScore = 0, frame = 0;
+let waveDelay = 0;
+
+// ── Mouse ──
+let mx = W/2, my = 200;
+c.addEventListener('mousemove', e => {
+  const r = c.getBoundingClientRect();
+  mx = (e.clientX - r.left) * (W / r.width);
+  my = (e.clientY - r.top) * (H / r.height);
+});
+c.addEventListener('click', () => {
+  if (state === 'menu' || state === 'dead') { startGame(); return; }
+  if (state === 'playing') fireWeapon();
+});
+document.addEventListener('keydown', e => {
+  if (state !== 'playing') return;
+  if (e.key === '1') plane.weapon = 'HARM';
+  if (e.key === '2') plane.weapon = 'BOMB';
+  if (e.key === 'c' || e.key === 'C') deployChaff();
+  if (e.key === 'Tab') { e.preventDefault(); plane.weapon = plane.weapon === 'HARM' ? 'BOMB' : 'HARM'; }
+});
+
+// ── Plane ──
+const plane = {
+  x:120, y:160, vx:2.5, vy:0, heading:0,
+  speed:2.8, hitR:7, alive:true,
+  weapon:'HARM', harm:5, bombs:5, chaff:4,
+  invuln:0, trail:[]
+};
+
+// ── Entity pools ──
+let sams=[], aaa=[], samMsls=[], playerMsls=[], aaaBullets=[], bombers=[], chaffs=[], particles=[], msgs=[];
+
+// ── Wave configs ──
+const WAVES = [
+  { sams:[{x:500,mode:'3PT',r:360}],           aaa:[180,780] },
+  { sams:[{x:460,mode:'PN',r:340}],             aaa:[130,460,760] },
+  { sams:[{x:290,mode:'3PT',r:340},{x:660,mode:'PN',r:360}],  aaa:[100,430,790] },
+  { sams:[{x:240,mode:'PN',r:350},{x:680,mode:'PN',r:360}],   aaa:[90,310,570,820] },
+  { sams:[{x:200,mode:'PN',r:360},{x:500,mode:'3PT',r:380},{x:760,mode:'PN',r:350}], aaa:[80,260,480,680,860] },
+];
+
+function getWave() { return WAVES[Math.min(wave-1, WAVES.length-1)]; }
+
+function startGame() {
+  if (state === 'dead') { score=0; wave=1; }
+  spawnWave();
+  state = 'playing';
+}
+
+function spawnWave() {
+  sams=[]; aaa=[]; samMsls=[]; playerMsls=[]; aaaBullets=[];
+  chaffs=[]; particles=[]; bombers=[];
+  const wd = getWave();
+  for (const s of wd.sams) sams.push(makeSAM(s.x, s.mode, s.r));
+  for (const x of wd.aaa) aaa.push(makeAAA(x));
+  plane.x=80; plane.y=160; plane.vx=plane.speed; plane.vy=0; plane.heading=0;
+  plane.alive=true; plane.invuln=150; plane.trail=[];
+  plane.harm = 4 + wave; plane.bombs = 4 + wave; plane.chaff = 3 + Math.floor(wave/2);
+  msg(`WAVE ${wave} — DESTROY ALL S-75 SITES`, 140, '#00ff88');
+}
+
+function makeSAM(x, mode, range) {
+  return {
+    x, y:GY-10, mode, radarOn:true,
+    rdAngle: -Math.PI*0.6, rdSpin:0.022,
+    engaged:false, reloadT:0, reloadMax:300,
+    mslCount:8, engR:range||350,
+    engageDelay:70, alive:true, hitR:16,
+    harmAlert:false, radarOffT:0, detected:false,
+    volley:0, maxVolley:2, volleyGap:0
+  };
+}
+
+function makeAAA(x) {
+  return { x, y:GY-5, angle:-Math.PI/2, fireT:0,
+           fireRate:30+Math.random()*20, range:185,
+           alive:true, hitR:8 };
+}
+
+// ══ Weapons ══
+function fireWeapon() {
+  if (!plane.alive) return;
+  if (plane.weapon === 'HARM') {
+    const tgt = sams.find(s => s.alive && s.radarOn);
+    if (!tgt) { msg('NO RADAR EMISSIONS DETECTED','#ff8800'); return; }
+    if (plane.harm <= 0) { msg('HARM — NO AMMO','#ff4400'); return; }
+    plane.harm--;
+    playerMsls.push(makeHARM(tgt));
+    msg('HARM AWAY — FOLLOWING RADAR EMISSIONS', 60, '#44ccff');
+  } else {
+    if (plane.bombs <= 0) { msg('BOMBS — NO AMMO','#ff4400'); return; }
+    plane.bombs--;
+    bombers.push({ x:plane.x, y:plane.y, vx:plane.vx*0.6, vy:Math.abs(plane.vy)*0.2+0.5,
+                   grav:0.18, alive:true, trail:[] });
+    msg('BOMBS AWAY', 45, '#ffcc00');
+  }
+}
+
+function makeHARM(tgt) {
+  const spd = 7.5;
+  return { x:plane.x, y:plane.y,
+           vx:Math.cos(plane.heading)*spd + plane.vx*0.4,
+           vy:Math.sin(plane.heading)*spd + plane.vy*0.4,
+           speed:spd, type:'HARM', target:tgt,
+           lastX:tgt.x, lastY:tgt.y-10,
+           alive:true, trail:[], hitR:5 };
+}
+
+function deployChaff() {
+  if (plane.chaff <= 0) { msg('CHAFF — NONE LEFT','#ff4400'); return; }
+  plane.chaff--;
+  chaffs.push({ x:plane.x, y:plane.y,
+                vx:-plane.vx*0.25, vy:-plane.vy*0.25,
+                life:320, r:18, alive:true });
+  msg('CHAFF DEPLOYED', 50, '#88ffaa');
+}
+
+function fireAAA(gun) {
+  const bspd = 9.5;
+  const dt = Math.hypot(plane.x-gun.x, plane.y-gun.y) / bspd;
+  const lx = plane.x + plane.vx*dt*0.55;
+  const ly = plane.y + plane.vy*dt*0.55;
+  const len = Math.hypot(lx-gun.x, ly-gun.y);
+  if (len < 1) return;
+  aaaBullets.push({ x:gun.x, y:gun.y-5,
+                    vx:(lx-gun.x)/len*bspd, vy:(ly-gun.y)/len*bspd,
+                    life:Math.ceil(len/bspd)+8, alive:true });
+}
+
+function launchSAM(sam) {
+  if (!sam.alive || !sam.radarOn || sam.mslCount <= 0) return;
+  sam.mslCount--;
+  sam.reloadT = sam.reloadMax;
+  const spd = 4.8 + wave*0.28;
+  const dx = plane.x-sam.x, dy = plane.y-sam.y;
+  const d = Math.hypot(dx,dy);
+  const m = {
+    x:sam.x, y:sam.y-12, vx:(dx/d)*spd, vy:(dy/d)*spd,
+    speed:spd, guidance:sam.mode, sam,
+    prevLOS: Math.atan2(plane.y-sam.y, plane.x-sam.x),
+    alive:true, trail:[], hitR:5,
+    armT:45, armed:false, chaffed:false
+  };
+  samMsls.push(m);
+  msg(`⚠ SAM LAUNCH — ${sam.mode === 'PN' ? 'PROPORTIONAL NAV' : '3-POINT GUIDANCE'}`, 90, '#ff2200');
+}
+
+// ══ Guidance ══
+function guide3Point(m) {
+  const rx=m.sam.x, ry=m.sam.y;
+  const tx=plane.x, ty=plane.y;
+  const ldx=tx-rx, ldy=ty-ry;
+  const ll=Math.hypot(ldx,ldy); if(ll<1) return;
+  const mdx=m.x-rx, mdy=m.y-ry;
+  const t = Math.max(0.05, Math.min(1.15, (mdx*ldx+mdy*ldy)/(ll*ll)));
+  const wx=rx+t*ldx, wy=ry+t*ldy;
+  const sd=Math.hypot(wx-m.x, wy-m.y); if(sd<0.1) return;
+  m.vx += (wx-m.x)/sd * 0.32;
+  m.vy += (wy-m.y)/sd * 0.32;
+}
+
+function guidePropNav(m) {
+  const N = 4.2;
+  const los = Math.atan2(plane.y-m.y, plane.x-m.x);
+  let rate = los - m.prevLOS;
+  while(rate>Math.PI) rate-=2*Math.PI;
+  while(rate<-Math.PI) rate+=2*Math.PI;
+  m.prevLOS = los;
+  const hdg = Math.atan2(m.vy, m.vx);
+  const a = N * m.speed * rate;
+  m.vx += -Math.sin(hdg)*a;
+  m.vy +=  Math.cos(hdg)*a;
+}
+
+// ══ Update ══
+function update() {
+  frame++;
+
+  // ── Plane ──
+  if (plane.alive) {
+    if (plane.invuln>0) plane.invuln--;
+    const dx=mx-plane.x, dy=my-plane.y;
+    const desired=Math.atan2(dy,dx);
+    let diff=desired-plane.heading;
+    while(diff>Math.PI) diff-=Math.PI*2;
+    while(diff<-Math.PI) diff+=Math.PI*2;
+    plane.heading += Math.sign(diff)*Math.min(Math.abs(diff), 0.065);
+    plane.vx=Math.cos(plane.heading)*plane.speed;
+    plane.vy=Math.sin(plane.heading)*plane.speed;
+    plane.x=Math.max(16, Math.min(W-16, plane.x+plane.vx));
+    plane.y=Math.max(16, Math.min(GY-28, plane.y+plane.vy));
+    plane.trail.push({x:plane.x,y:plane.y});
+    if(plane.trail.length>28) plane.trail.shift();
+  }
+
+  // ── SAM sites ──
+  for (const sam of sams) {
+    if (!sam.alive) continue;
+    if (sam.radarOn) sam.rdAngle += sam.rdSpin;
+    if (sam.radarOffT>0) { sam.radarOffT--; sam.radarOn=false;
+      if(sam.radarOffT<=0){sam.radarOn=true; sam.harmAlert=false;} }
+    if (sam.reloadT>0) sam.reloadT--;
+    if (sam.volleyGap>0) sam.volleyGap--;
+
+    const dist=Math.hypot(plane.x-sam.x, plane.y-sam.y);
+    sam.detected = dist<sam.engR && sam.radarOn && plane.alive;
+
+    if (sam.detected) {
+      if (sam.engageDelay>0) { sam.engageDelay--; }
+      else if (sam.reloadT<=0 && sam.mslCount>0 && sam.volleyGap<=0) {
+        launchSAM(sam);
+        sam.volley++;
+        if (sam.volley < sam.maxVolley) { sam.volleyGap=40; }
+        else { sam.volley=0; sam.reloadT=sam.reloadMax; }
+      }
+    }
+
+    // Detect incoming HARM
+    if (!sam.harmAlert) {
+      for (const pm of playerMsls) {
+        if (!pm.alive || pm.type!=='HARM' || pm.target!==sam) continue;
+        if (Math.hypot(pm.x-sam.x, pm.y-sam.y)<280) {
+          sam.harmAlert=true;
+          if (Math.random()<0.6) {
+            sam.radarOffT = 150+Math.random()*130;
+            msg(`S-75 [${sam.mode}] RADAR SHUTDOWN — EVADING HARM`, 100, '#ffaa00');
+          }
+        }
+      }
+    }
+  }
+
+  // ── AAA ──
+  for (const gun of aaa) {
+    if (!gun.alive||!plane.alive) continue;
+    const dx=plane.x-gun.x, dy=plane.y-gun.y;
+    const dist=Math.hypot(dx,dy);
+    if (dist<gun.range && plane.y>GY-270) {
+      gun.angle=Math.atan2(dy,dx);
+      gun.fireT++;
+      if(gun.fireT>=gun.fireRate){gun.fireT=0; fireAAA(gun);}
+    } else gun.fireT=0;
+  }
+
+  // ── SAM missiles ──
+  for (const m of samMsls) {
+    if (!m.alive) continue;
+    m.trail.push({x:m.x,y:m.y});
+    if(m.trail.length>22) m.trail.shift();
+    if(m.armT>0){m.armT--;}else m.armed=true;
+
+    // Chaff check (PN only)
+    if (!m.chaffed && m.guidance==='PN') {
+      for (const ch of chaffs) {
+        if(!ch.alive) continue;
+        if(Math.hypot(m.x-ch.x,m.y-ch.y)<ch.r*1.4){
+          m.chaffed=true;
+          m.vx+=(Math.random()-0.5)*4; m.vy+=(Math.random()-0.5)*4;
+          msg('CHAFF EFFECTIVE — PN MISSILE CONFUSED', 70, '#88ffaa');
+        }
+      }
+    }
+
+    if (!m.chaffed) {
+      if(m.guidance==='3PT') guide3Point(m);
+      else guidePropNav(m);
+    }
+
+    // Clamp speed
+    const spd=Math.hypot(m.vx,m.vy);
+    if(spd>0.01){m.vx=m.vx/spd*m.speed; m.vy=m.vy/spd*m.speed;}
+    m.x+=m.vx; m.y+=m.vy;
+
+    if(m.x<-10||m.x>W+10||m.y>GY+10||m.y<-20){m.alive=false; continue;}
+
+    if (m.armed && plane.alive && plane.invuln<=0) {
+      const d=Math.hypot(m.x-plane.x,m.y-plane.y);
+      if(d<m.hitR+plane.hitR){m.alive=false; killPlane('DIRECT HIT BY SAM MISSILE');}
+      else if(d<22){m.alive=false; boom(m.x,m.y,18,'#ff6600');
+        if(d<15) killPlane('SAM PROXIMITY FUZE');}
+    }
+  }
+
+  // ── Player missiles ──
+  for (const pm of playerMsls) {
+    if (!pm.alive) continue;
+    pm.trail.push({x:pm.x,y:pm.y});
+    if(pm.trail.length>20) pm.trail.shift();
+
+    const tx=pm.target.radarOn?pm.target.x:pm.lastX;
+    const ty=pm.target.radarOn?pm.target.y-10:pm.lastY;
+    if(pm.target.radarOn){pm.lastX=pm.target.x; pm.lastY=pm.target.y-10;}
+
+    const dx=tx-pm.x, dy=ty-pm.y;
+    const d=Math.hypot(dx,dy);
+    if(d<pm.speed+5){
+      pm.alive=false; boom(pm.x,pm.y,38,'#ff6600');
+      if(pm.target.alive && Math.hypot(pm.x-pm.target.x,pm.y-pm.target.y)<50)
+        destroySAM(pm.target,'HARM STRIKE');
+      continue;
+    }
+    pm.vx=pm.vx*0.82+(dx/d)*pm.speed*0.18;
+    pm.vy=pm.vy*0.82+(dy/d)*pm.speed*0.18;
+    const s=Math.hypot(pm.vx,pm.vy);
+    pm.vx=pm.vx/s*pm.speed; pm.vy=pm.vy/s*pm.speed;
+    pm.x+=pm.vx; pm.y+=pm.vy;
+    if(pm.x<0||pm.x>W||pm.y>GY) pm.alive=false;
+  }
+
+  // ── Bombs ──
+  for (const b of bombers) {
+    if(!b.alive) continue;
+    b.trail.push({x:b.x,y:b.y}); if(b.trail.length>16) b.trail.shift();
+    b.vy+=b.grav; b.x+=b.vx; b.y+=b.vy;
+    if(b.y>=GY){
+      b.alive=false; boom(b.x,GY,50,'#ff8800');
+      for(const s of sams){ if(s.alive&&Math.abs(s.x-b.x)<52){destroySAM(s,'DIRECT HIT — DUMB BOMB');} }
+      for(const g of aaa){ if(g.alive&&Math.abs(g.x-b.x)<38){g.alive=false;boom(g.x,GY-5,22,'#ff6600');score+=80;msg('+80 AAA GUN DESTROYED',60,'#ffcc00');} }
+    }
+  }
+
+  // ── AAA bullets ──
+  for (const b of aaaBullets) {
+    if(!b.alive) continue;
+    b.x+=b.vx; b.y+=b.vy; b.life--;
+    if(b.life<=0||b.y>GY||b.y<0||b.x<0||b.x>W){b.alive=false; continue;}
+    if(plane.alive&&plane.invuln<=0&&Math.hypot(b.x-plane.x,b.y-plane.y)<plane.hitR+3){
+      b.alive=false; killPlane('AAA GUNFIRE — FLY HIGHER');
+    }
+  }
+
+  // ── Chaff ──
+  for (const ch of chaffs) {
+    ch.x+=ch.vx; ch.y+=ch.vy; ch.vy+=0.025; ch.life--; ch.r+=0.18;
+    if(ch.life<=0) ch.alive=false;
+  }
+
+  // ── Particles ──
+  for (const p of particles) {
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.08; p.life--;
+  }
+
+  // ── Messages ──
+  for (const m of msgs) m.t++;
+  msgs = msgs.filter(m=>m.t<m.dur);
+
+  // ── Periodic cleanup ──
+  if(frame%180===0){
+    samMsls=samMsls.filter(m=>m.alive);
+    playerMsls=playerMsls.filter(m=>m.alive);
+    aaaBullets=aaaBullets.filter(b=>b.alive);
+    bombers=bombers.filter(b=>b.alive);
+    particles=particles.filter(p=>p.life>0);
+    chaffs=chaffs.filter(c=>c.alive);
+  }
+
+  // ── Wave clear ──
+  if(sams.every(s=>!s.alive)&&state==='playing'){
+    score+=wave*250;
+    state='waveclear';
+    waveDelay=200;
+    msg(`WAVE ${wave} CLEAR! +${wave*250} — NEXT WAVE INBOUND`,160,'#00ff88');
+    wave++;
+  }
+  if(state==='waveclear'){
+    waveDelay--;
+    if(waveDelay<=0){spawnWave(); state='playing';}
+  }
+}
+
+// ══ Combat helpers ══
+function boom(x,y,r,col) {
+  for(let i=0;i<20;i++){
+    const a=Math.random()*Math.PI*2, s=1.2+Math.random()*3.5;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,
+                    life:25+Math.random()*30, color:col||'#ff6600',
+                    r:1.5+Math.random()*2.5});
+  }
+}
+
+function destroySAM(sam, reason) {
+  if(!sam.alive) return;
+  sam.alive=false;
+  boom(sam.x,sam.y-10,60,'#ff4400');
+  boom(sam.x+10,sam.y,40,'#ffaa00');
+  score+=500;
+  msg(`S-75 DESTROYED — ${reason||''} +500`,110,'#00ff66');
+}
+
+function killPlane(reason) {
+  if(!plane.alive) return;
+  plane.alive=false;
+  boom(plane.x,plane.y,30,'#ff6600');
+  boom(plane.x,plane.y,18,'#ffffff');
+  msg(reason, 180, '#ff2200');
+  setTimeout(()=>{ state='dead'; }, 1800);
+}
+
+function msg(text, dur=80, color='#ffffff') {
+  msgs = msgs.filter(m=>m.text!==text);
+  msgs.push({text, dur:dur||80, t:0, color});
+  if(msgs.length>5) msgs.shift();
+}
+
+// ══ Draw ══
+function draw() {
+  // Sky
+  const sg=ctx.createLinearGradient(0,0,0,GY);
+  sg.addColorStop(0,'#000a1a'); sg.addColorStop(0.55,'#001828'); sg.addColorStop(1,'#00261a');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,GY);
+
+  // Grid lines (radar-screen aesthetic)
+  ctx.strokeStyle='rgba(0,80,30,0.12)'; ctx.lineWidth=1; ctx.setLineDash([2,12]);
+  for(let x=0;x<W;x+=80){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,GY);ctx.stroke();}
+  for(let y=0;y<GY;y+=80){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.setLineDash([]);
+
+  // Ground
+  const gg=ctx.createLinearGradient(0,GY,0,H);
+  gg.addColorStop(0,'#1e4a0c'); gg.addColorStop(1,'#0a1504');
+  ctx.fillStyle=gg; ctx.fillRect(0,GY,W,H-GY);
+  ctx.strokeStyle='#2a7010'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,GY); ctx.lineTo(W,GY); ctx.stroke();
+
+  // Ground texture blobs
+  ctx.fillStyle='#1a3a08';
+  for(let x=40;x<W;x+=110){ ctx.fillRect(x,GY,45,7); }
+
+  // SAM radar cones
+  for(const sam of sams) {
+    if(!sam.alive||!sam.radarOn) continue;
+    ctx.save();
+    ctx.globalAlpha=0.07;
+    ctx.fillStyle='#00ff44';
+    const sweep=Math.PI*0.28;
+    ctx.beginPath(); ctx.moveTo(sam.x,sam.y);
+    ctx.arc(sam.x,sam.y,sam.engR,sam.rdAngle-sweep,sam.rdAngle+sweep);
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha=0.18; ctx.strokeStyle='#00ff44'; ctx.lineWidth=1;
+    ctx.stroke(); ctx.restore();
+  }
+
+  // Chaff clouds
+  for(const ch of chaffs){
+    if(!ch.alive) continue;
+    ctx.globalAlpha=(ch.life/320)*0.35;
+    ctx.fillStyle='#aaccaa';
+    ctx.beginPath(); ctx.arc(ch.x,ch.y,ch.r,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // SAM sites
+  for(const sam of sams) drawSAM(sam);
+
+  // AAA guns
+  for(const gun of aaa) drawAAA(gun);
+
+  // Trails & projectiles
+  for(const m of samMsls){if(!m.alive)continue; drawTrail(m.trail,'#ff6622',0.55); drawMsl(m.x,m.y,Math.atan2(m.vy,m.vx),'#ff4400',9,2);}
+  for(const pm of playerMsls){if(!pm.alive)continue; drawTrail(pm.trail,'#44aaff',0.65); drawMsl(pm.x,pm.y,Math.atan2(pm.vy,pm.vx),'#66bbff',8,2);}
+  for(const b of bombers){if(!b.alive)continue; drawTrail(b.trail,'#887700',0.4); ctx.fillStyle='#ffdd00'; ctx.beginPath(); ctx.arc(b.x,b.y,4,0,Math.PI*2); ctx.fill();}
+  for(const b of aaaBullets){if(!b.alive)continue; ctx.fillStyle='#ffff44'; ctx.beginPath(); ctx.arc(b.x,b.y,1.8,0,Math.PI*2); ctx.fill();}
+
+  // Particles
+  for(const p of particles){
+    if(p.life<=0) continue;
+    ctx.globalAlpha=Math.min(1,p.life/30);
+    ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Player plane
+  if(plane.alive || (frame%8<4 && plane.invuln>0)){
+    drawTrail(plane.trail,'rgba(100,150,255,0.5)',0.35);
+    drawPlane();
+  }
+
+  // Cursor
+  if(state==='playing') drawCursor();
+
+  // Threat dashes (missile-to-plane warning lines)
+  for(const m of samMsls){
+    if(!m.alive||!m.armed) continue;
+    ctx.strokeStyle='rgba(255,80,0,0.12)'; ctx.lineWidth=0.7; ctx.setLineDash([3,8]);
+    ctx.beginPath(); ctx.moveTo(m.x,m.y); ctx.lineTo(plane.x,plane.y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  drawHUD();
+  drawMessages();
+  if(state==='menu') drawMenu();
+  if(state==='dead') drawDead();
+}
+
+function drawSAM(sam) {
+  const x=sam.x, y=sam.y;
+
+  // Base
+  ctx.fillStyle=sam.alive?'#2a4800':'#3a2200';
+  ctx.fillRect(x-13,y-8,26,8);
+
+  if(sam.alive){
+    // Launcher rail
+    ctx.fillStyle='#4a6800';
+    ctx.fillRect(x-10,y-12,20,5);
+
+    // Missile on rail
+    if(sam.mslCount>0){
+      ctx.fillStyle='#888'; ctx.fillRect(x-2,y-22,4,11);
+      ctx.fillStyle='#bbb'; ctx.beginPath(); ctx.arc(x,y-22,3,0,Math.PI*2); ctx.fill();
+    }
+
+    // Radar dish
+    if(sam.radarOn){
+      ctx.save(); ctx.translate(x,y-10); ctx.rotate(sam.rdAngle);
+      ctx.fillStyle='#00cc44';
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(12,-5); ctx.lineTo(12,5); ctx.closePath(); ctx.fill();
+      ctx.restore();
+      // Blink
+      if(frame%16<8){ ctx.fillStyle='#00ff44'; ctx.beginPath(); ctx.arc(x,y-12,2.5,0,Math.PI*2); ctx.fill(); }
+    } else {
+      // Radar off
+      ctx.fillStyle='#554400'; ctx.beginPath(); ctx.arc(x,y-12,3,0,Math.PI*2); ctx.fill();
+    }
+
+    // Label
+    ctx.textAlign='center'; ctx.font='8px Courier New';
+    ctx.fillStyle=sam.radarOn?'#00ff55':'#776600';
+    ctx.fillText(`S-75 [${sam.mode}]`,x,y+13);
+    ctx.fillStyle=sam.radarOn?'#44ff88':'#886600';
+    ctx.fillText(sam.radarOn?'RADAR ●':'RADAR ○',x,y+22);
+    ctx.fillStyle='#777'; ctx.fillText(`↑${sam.mslCount}`,x,y+31);
+
+    // Detected ring
+    if(sam.detected){
+      ctx.strokeStyle='rgba(255,50,0,0.3)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(x,y-5,sam.engR,0,Math.PI*2); ctx.stroke();
+    }
+  } else {
+    // Destroyed
+    ctx.fillStyle='#3a1a00'; ctx.fillRect(x-13,y-4,26,4);
+    ctx.fillStyle='#661100'; ctx.font='8px Courier New'; ctx.textAlign='center';
+    ctx.fillText('DESTROYED',x,y+15);
+  }
+}
+
+function drawAAA(gun) {
+  if(!gun.alive) return;
+  const x=gun.x, y=gun.y;
+  ctx.fillStyle='#3a3a00'; ctx.fillRect(x-7,y-6,14,6);
+  ctx.save(); ctx.translate(x,y-4); ctx.rotate(gun.angle);
+  ctx.fillStyle='#666600'; ctx.fillRect(0,-2,13,4);
+  // Flash when firing
+  if(gun.fireT<5&&gun.fireT>0){ ctx.fillStyle='#ffff44'; ctx.beginPath(); ctx.arc(13,0,3,0,Math.PI*2); ctx.fill(); }
+  ctx.restore();
+  ctx.fillStyle='#888800'; ctx.font='7px Courier New'; ctx.textAlign='center';
+  ctx.fillText('ZSU-23',x,y+10);
+}
+
+function drawPlane() {
+  const x=plane.x, y=plane.y, h=plane.heading;
+  ctx.save(); ctx.translate(x,y); ctx.rotate(h);
+
+  // Exhaust glow
+  ctx.globalAlpha=0.25+Math.random()*0.1;
+  ctx.fillStyle='#ff6600';
+  ctx.beginPath(); ctx.arc(-9,0,4,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  // Fuselage
+  ctx.fillStyle='#7788cc'; ctx.fillRect(-10,-2,20,4);
+  // Nose cone
+  ctx.fillStyle='#aabbdd';
+  ctx.beginPath(); ctx.moveTo(10,0); ctx.lineTo(6,-1.5); ctx.lineTo(6,1.5); ctx.closePath(); ctx.fill();
+  // Wings
+  ctx.fillStyle='#5566aa';
+  ctx.beginPath(); ctx.moveTo(-1,-2); ctx.lineTo(-4,-11); ctx.lineTo(5,-2); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-1,2); ctx.lineTo(-4,11); ctx.lineTo(5,2); ctx.closePath(); ctx.fill();
+  // Tail fins
+  ctx.fillStyle='#6677bb';
+  ctx.beginPath(); ctx.moveTo(-10,-2); ctx.lineTo(-13,-7); ctx.lineTo(-8,-2); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-10,2); ctx.lineTo(-13,7); ctx.lineTo(-8,2); ctx.closePath(); ctx.fill();
+
+  ctx.restore();
+
+  // Nav light
+  if(frame%22<11){
+    ctx.fillStyle='#ff2200'; ctx.beginPath();
+    ctx.arc(x+Math.cos(h)*-11,y+Math.sin(h)*-11,1.8,0,Math.PI*2); ctx.fill();
+  }
+}
+
+function drawMsl(x,y,angle,col,len,w){
+  ctx.save(); ctx.translate(x,y); ctx.rotate(angle);
+  ctx.fillStyle=col; ctx.fillRect(-len/2,-w/2,len,w);
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(len/2,0,w+0.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawTrail(trail,col,alpha){
+  if(trail.length<2) return;
+  for(let i=1;i<trail.length;i++){
+    const t=i/trail.length;
+    ctx.globalAlpha=t*alpha*0.6;
+    ctx.strokeStyle=col; ctx.lineWidth=Math.max(0.4,t*1.8);
+    ctx.beginPath(); ctx.moveTo(trail[i-1].x,trail[i-1].y); ctx.lineTo(trail[i].x,trail[i].y); ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawCursor(){
+  ctx.strokeStyle='rgba(255,255,255,0.55)'; ctx.lineWidth=1;
+  ctx.setLineDash([4,5]);
+  ctx.beginPath(); ctx.moveTo(mx-12,my); ctx.lineTo(mx+12,my);
+  ctx.moveTo(mx,my-12); ctx.lineTo(mx,my+12);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.strokeStyle='rgba(255,255,255,0.3)';
+  ctx.beginPath(); ctx.arc(mx,my,9,0,Math.PI*2); ctx.stroke();
+}
+
+function drawHUD(){
+  if(state!=='playing'&&state!=='waveclear') return;
+  ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(0,H-50,W,50);
+  ctx.strokeStyle='#002a00'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,H-50); ctx.lineTo(W,H-50); ctx.stroke();
+
+  ctx.font='11px Courier New'; ctx.textAlign='left';
+
+  // Weapons
+  ctx.fillStyle=plane.weapon==='HARM'?'#44ddff':'#447766';
+  ctx.fillText(`[1] HARM ×${plane.harm}`,10,H-32);
+  ctx.fillStyle=plane.weapon==='BOMB'?'#ffdd00':'#776644';
+  ctx.fillText(`[2] BOMB ×${plane.bombs}`,10,H-14);
+  ctx.fillStyle='#88ccaa';
+  ctx.fillText(`[C] CHAFF ×${plane.chaff}`,130,H-23);
+
+  // Altitude
+  const alt=Math.round((GY-plane.y)*2.2);
+  const lowAlt=plane.y>GY-270;
+  ctx.fillStyle=lowAlt?'#ff3300':'#00cc66';
+  ctx.fillText(`ALT ${alt}ft${lowAlt?' ⚠ AAA RANGE':''}`,265,H-23);
+
+  // Wave/Score
+  ctx.textAlign='center';
+  ctx.fillStyle='#00ff66'; ctx.font='12px Courier New';
+  ctx.fillText(`WAVE ${wave}`,W/2-50,H-32);
+  ctx.fillStyle='#ffcc00';
+  ctx.fillText(`SCORE ${score}`,W/2+50,H-32);
+
+  // Targets
+  const rem=sams.filter(s=>s.alive).length;
+  ctx.fillStyle=rem>0?'#ff8844':'#00ff66';
+  ctx.fillText(`SAMs REMAINING: ${rem}`,W/2,H-14);
+
+  // SAM status (right side)
+  ctx.textAlign='right'; ctx.font='9px Courier New';
+  let sy=H-46;
+  for(const sam of sams){
+    ctx.fillStyle=!sam.alive?'#442200':sam.radarOn?'#ff3300':'#886600';
+    const label=!sam.alive?'✕ DESTROYED':sam.radarOn?`● RADAR ON [${sam.mode}]`:`○ RADAR OFF [${sam.mode}]`;
+    ctx.fillText(label,W-10,sy); sy+=13;
+  }
+
+  // Controls hint
+  ctx.textAlign='center'; ctx.fillStyle='#335533'; ctx.font='8px Courier New';
+  ctx.fillText('CLICK to fire | 1:HARM targets radar | 2:Dumb bomb | C:chaff disrupts PN guidance | Tab:swap weapon',W/2,H-4);
+}
+
+function drawMessages(){
+  ctx.textAlign='center';
+  let y=26;
+  for(const m of msgs){
+    ctx.globalAlpha=Math.min(1,(m.dur-m.t)/18);
+    ctx.font='bold 12px Courier New';
+    ctx.fillStyle=m.color; ctx.shadowColor=m.color; ctx.shadowBlur=7;
+    ctx.fillText(m.text,W/2,y); ctx.shadowBlur=0;
+    y+=17;
+  }
+  ctx.globalAlpha=1;
+}
+
+// ══ Menu Screens ══
+function drawMenu(){
+  ctx.fillStyle='rgba(0,0,0,0.78)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+
+  ctx.font='bold 34px Courier New'; ctx.fillStyle='#00ff88';
+  ctx.shadowColor='#00ff88'; ctx.shadowBlur=18;
+  ctx.fillText('ANTI-SAM AIR OPERATIONS',W/2,60); ctx.shadowBlur=0;
+  ctx.font='11px Courier New'; ctx.fillStyle='#44cc88';
+  ctx.fillText('S-75 DVINA SUPPRESSION — GUIDED MISSILE INTERCEPT SIMULATOR',W/2,84);
+
+  const sections=[
+    {y:115, title:'── AIRCRAFT CONTROLS ──', col:'#00ff44', items:[
+      ['MOUSE','Fly plane — it follows your cursor continuously'],
+      ['CLICK','Fire selected weapon'],
+      ['1','Switch to HARM (Anti-Radiation Missile)'],
+      ['2','Switch to Dumb Bomb'],
+      ['C','Deploy chaff countermeasures'],
+      ['TAB','Toggle weapon'],
+    ]},
+    {y:250, title:'── WEAPON SYSTEMS ──', col:'#44aaff', items:[
+      ['HARM','Homes on active radar emissions. Deadly if radar is ON.'],
+      ['DUMB BOMB','Unguided. Must fly low over target to drop accurately.'],
+      ['CHAFF','Foils Proportional Navigation (PN) missiles. Has no effect on 3-PT.'],
+    ]},
+    {y:358, title:'── ENEMY THREATS ──', col:'#ff6644', items:[
+      ['S-75 [3PT]','3-Point guidance: steers missile to stay on radar-to-target line.'],
+      ['S-75 [PN]','Proportional Navigation: adjusts to LOS rotation rate. Very accurate.'],
+      ['ZSU-23 AAA','Auto-cannon — fires if you fly below ~270ft altitude.'],
+    ]},
+    {y:468, title:'── REAL TACTICS ──', col:'#ffcc44', items:[
+      ['SEAD','Suppress Enemy Air Defense: fire HARM when radar is active.'],
+      ['RADAR BAITING','SAMs can shut off radar when HARM is detected. Wait them out.'],
+      ['LOW-LEVEL INGRESS','Fly low for bomb runs — but AAA will engage you. Plan your exit.'],
+      ['CHAFF NOTCH','Deploy chaff + turn perpendicular to PN missile LOS.'],
+    ]},
+  ];
+
+  for(const sec of sections){
+    ctx.font='bold 10px Courier New'; ctx.fillStyle=sec.col; ctx.fillText(sec.title,W/2,sec.y);
+    ctx.font='10px Courier New';
+    let iy=sec.y+15;
+    for(const [key,desc] of sec.items){
+      ctx.fillStyle='#88ccff'; ctx.textAlign='right'; ctx.fillText(`[${key}]`,W/2+2,iy);
+      ctx.fillStyle='#aaaaaa'; ctx.textAlign='left'; ctx.fillText(desc,W/2+8,iy);
+      iy+=13;
+    }
+  }
+
+  ctx.textAlign='center';
+  ctx.font='bold 14px Courier New'; ctx.fillStyle='#ffcc00';
+  ctx.shadowColor='#ffcc00'; ctx.shadowBlur=10;
+  ctx.fillText('[ CLICK TO BEGIN MISSION ]',W/2,H-18); ctx.shadowBlur=0;
+}
+
+function drawDead(){
+  ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.font='bold 44px Courier New'; ctx.fillStyle='#ff2200';
+  ctx.shadowColor='#ff2200'; ctx.shadowBlur=22;
+  ctx.fillText('AIRCRAFT LOST',W/2,H/2-55); ctx.shadowBlur=0;
+  ctx.font='15px Courier New'; ctx.fillStyle='#aaaaaa';
+  ctx.fillText(`WAVE ${wave}   SCORE ${score}`,W/2,H/2-15);
+  if(score>highScore){ highScore=score; ctx.fillStyle='#ffcc00'; ctx.fillText('★ NEW HIGH SCORE ★',W/2,H/2+15); }
+  ctx.fillStyle='#00ff66'; ctx.fillText(`HIGH SCORE: ${highScore}`,W/2,H/2+38);
+  ctx.font='13px Courier New'; ctx.fillStyle='#ffcc00';
+  ctx.shadowColor='#ffcc00'; ctx.shadowBlur=8;
+  ctx.fillText('[ CLICK TO RETRY ]',W/2,H/2+80); ctx.shadowBlur=0;
+}
+
+// ══ Main loop ══
+(function loop(){
+  if(state==='playing'||state==='waveclear') update();
+  draw();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
